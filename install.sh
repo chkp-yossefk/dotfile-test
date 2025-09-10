@@ -15,7 +15,7 @@ else
 fi
 
 # Configure nginx
-cat > /etc/nginx/sites-available/proxy.conf << 'EOF'
+cat > /etc/nginx/conf.d/proxy.conf << 'EOF'
 server {
     listen 11111;
     server_name _;
@@ -40,14 +40,7 @@ server {
 }
 EOF
 
-# Enable the configuration
-if [ -d /etc/nginx/sites-enabled ]; then
-    ln -sf /etc/nginx/sites-available/proxy.conf /etc/nginx/sites-enabled/
-elif [ -d /etc/nginx/conf.d ]; then
-    cp /etc/nginx/sites-available/proxy.conf /etc/nginx/conf.d/proxy.conf
-fi
-
 # Test nginx configuration and restart
-nginx -t && systemctl restart nginx
+nginx -t && nginx
 echo "Installation complete!" >> /tmp/install.log
 echo "Installation complete!"
