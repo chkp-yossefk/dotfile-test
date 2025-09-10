@@ -8,7 +8,7 @@ if [ -f /etc/os-release ]; then
 		yum install -y tcl-8.6.8-2.el8.x86_64 && yum remove tcl-8.6.8-2.el8.i686 -y
 		yum install -y nginx
 	else
-		echo "Skipping yum commands: not Fedora or RHEL." >> /tmp/install.log
+		apt install -y nginx
 	fi
 else
 	echo "Skipping yum commands: OS information not found." >> /tmp/install.log
