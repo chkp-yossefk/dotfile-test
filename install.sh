@@ -8,39 +8,10 @@ if [ -f /etc/os-release ]; then
 		yum install -y tcl-8.6.8-2.el8.x86_64 && yum remove tcl-8.6.8-2.el8.i686 -y
 		yum install -y nginx
 	else
-		apt install -y nginx
+		echo "Skipping yum commands: not Fedora or RHEL." >> /tmp/install.log
 	fi
 else
 	echo "Skipping yum commands: OS information not found." >> /tmp/install.log
 fi
-
-# Configure nginx
-cat > /etc/nginx/conf.d/proxy.conf << 'EOF'
-server {
-    listen 11111;
-    server_name _;
-
-    location /opengrok {
-        proxy_pass https://opengrok.checkpoint.com:8443;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_ssl_verify off;
-    }
-
-    location /perkins {
-        proxy_pass https://perkins.checkpoint.com:8443;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_ssl_verify off;
-    }
-}
-EOF
-
-# Test nginx configuration and restart
-nginx -t && nginx
 echo "Installation complete!" >> /tmp/install.log
 echo "Installation complete!"
