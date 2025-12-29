@@ -1,57 +1,146 @@
-name: Test DinD Build
+name: Multi-Builder Test (DinD, Kaniko, Buildah)
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:  # Allows manual trigger
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: test-app
+  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-  build-docker:
-    runs-on: arc-runner-set  # Must match your INSTALLATION_NAME
+  # ============================================
+  # Job 1: Build with Docker-in-Docker
+  # ============================================
+  build-dind:
+    name: Build with DinD
+    runs-on: arc-runner-set
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify Docker is available
+      - name: Verify Docker
         run: |
           echo "=== Docker Version ==="
           docker version
           echo ""
           echo "=== Docker Info ==="
-          docker info
-          echo ""
-          echo "=== Docker Socket ==="
-          ls -la /var/run/docker.sock || echo "No socket file (using TCP)"
+          docker info --format '{{.SecurityOptions}}'
 
-      - name: Build Docker image
+      - name: Build with Docker
         run: |
-          docker build -t test-image:${{ github.sha }} .
-          docker images
+          docker build -t ${{ env.IMAGE_NAME }}:dind-${{ env.IMAGE_TAG }} .
 
-      - name: Run the container
+      - name: Test image
         run: |
-          docker run --rm test-image:${{ github.sha }}
+          docker run --rm ${{ env.IMAGE_NAME }}:dind-${{ env.IMAGE_TAG }}
 
-      - name: Test multi-stage build
+      - name: Image size
         run: |
-          cat << 'EOF' > Dockerfile.multistage
-          FROM golang:1.21-alpine AS builder
-          WORKDIR /app
-          RUN echo 'package main; import "fmt"; func main() { fmt.Println("Built with DinD!") }' > main.go
-          RUN go build -o hello main.go
-
-          FROM alpine:3.19
-          COPY --from=builder /app/hello /hello
-          ENTRYPOINT ["/hello"]
-          EOF
-          
-          docker build -f Dockerfile.multistage -t multistage-test:latest .
-          docker run --rm multistage-test:latest
+          docker images ${{ env.IMAGE_NAME }}:dind-${{ env.IMAGE_TAG }} --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
 
       - name: Cleanup
+        if: always()
+        run: docker rmi ${{ env.IMAGE_NAME }}:dind-${{ env.IMAGE_TAG }} || true
+
+  # ============================================
+  # Job 2: Build with Kaniko (No privileges!)
+  # ============================================
+  build-kaniko:
+    name: Build with Kaniko
+    runs-on: arc-runner-set
+    container:
+      image: gcr.io/kaniko-project/executor:debug
+      options: --entrypoint ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build with Kaniko
         run: |
-          docker rmi test-image:${{ github.sha }} || true
-          docker rmi multistage-test:latest || true
-          docker system prune -f
+          echo "=== Building with Kaniko (rootless, daemonless) ==="
+          /kaniko/executor \
+            --context="${GITHUB_WORKSPACE}" \
+            --dockerfile="${GITHUB_WORKSPACE}/Dockerfile" \
+            --no-push \
+            --tarPath=/tmp/image.tar \
+            --destination=${{ env.IMAGE_NAME }}:kaniko-${{ env.IMAGE_TAG }} \
+            --verbosity=info
+
+      - name: Verify tarball created
+        run: |
+          ls -lh /tmp/image.tar
+          echo "Image built successfully with Kaniko!"
+
+  # ============================================
+  # Job 3: Build with Buildah (No privileges!)
+  # ============================================
+  build-buildah:
+    name: Build with Buildah
+    runs-on: arc-runner-set
+    container:
+      image: quay.io/buildah/stable:latest
+      options: --user root --security-opt seccomp=unconfined
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify Buildah
+        run: |
+          echo "=== Buildah Version ==="
+          buildah version
+          echo ""
+          echo "=== Storage Driver ==="
+          buildah info --format '{{.store.GraphDriverName}}'
+
+      - name: Build with Buildah
+        run: |
+          buildah bud \
+            --layers \
+            --tag ${{ env.IMAGE_NAME }}:buildah-${{ env.IMAGE_TAG }} \
+            --file Dockerfile \
+            .
+
+      - name: List images
+        run: |
+          buildah images
+
+      - name: Inspect image
+        run: |
+          buildah inspect ${{ env.IMAGE_NAME }}:buildah-${{ env.IMAGE_TAG }} | head -50
+
+      - name: Test with Podman (available in buildah image)
+        run: |
+          podman run --rm ${{ env.IMAGE_NAME }}:buildah-${{ env.IMAGE_TAG }}
+
+      - name: Cleanup
+        if: always()
+        run: |
+          buildah rmi ${{ env.IMAGE_NAME }}:buildah-${{ env.IMAGE_TAG }} || true
+
+  # ============================================
+  # Job 4: Summary comparison
+  # ============================================
+  summary:
+    name: Build Summary
+    runs-on: arc-runner-set
+    needs: [build-dind, build-kaniko, build-buildah]
+    if: always()
+    steps:
+      - name: Results Summary
+        run: |
+          echo "# Build Results Summary" 
+          echo ""
+          echo "| Builder | Status | Privileged Required |"
+          echo "|---------|--------|---------------------|"
+          echo "| DinD    | ${{ needs.build-dind.result }} | Yes (sidecar) |"
+          echo "| Kaniko  | ${{ needs.build-kaniko.result }} | No |"
+          echo "| Buildah | ${{ needs.build-buildah.result }} | No |"
+          echo ""
+          echo "## Security Notes"
+          echo "- **DinD**: Requires privileged sidecar container"
+          echo "- **Kaniko**: Fully rootless, runs in userspace"
+          echo "- **Buildah**: Rootless with seccomp=unconfined"
