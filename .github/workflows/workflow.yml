@@ -56,15 +56,24 @@ jobs:
       image: gcr.io/kaniko-project/executor:debug
       options: --entrypoint ""
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Clone repository
+        run: |
+          REPO_URL="https://github.com/${{ github.repository }}"
+          BRANCH="${{ github.ref_name }}"
+          
+          mkdir -p /workspace
+          cd /workspace
+          git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" .
+          
+          echo "=== Repository cloned ==="
+          ls -la
 
       - name: Build with Kaniko
         run: |
           echo "=== Building with Kaniko (rootless, daemonless) ==="
           /kaniko/executor \
-            --context="${GITHUB_WORKSPACE}" \
-            --dockerfile="${GITHUB_WORKSPACE}/Dockerfile" \
+            --context="/workspace" \
+            --dockerfile="/workspace/Dockerfile" \
             --no-push \
             --tarPath=/tmp/image.tar \
             --destination=${{ env.IMAGE_NAME }}:kaniko-${{ env.IMAGE_TAG }} \
@@ -76,7 +85,7 @@ jobs:
           echo "Image built successfully with Kaniko!"
 
   # ============================================
-  # Job 3: Build with Buildah (No privileges!)
+  # Job 3: Build with Buildah (VFS driver)
   # ============================================
   build-buildah:
     name: Build with Buildah
@@ -84,21 +93,36 @@ jobs:
     container:
       image: quay.io/buildah/stable:latest
       options: --user root --security-opt seccomp=unconfined
+      env:
+        STORAGE_DRIVER: vfs
+        BUILDAH_ISOLATION: chroot
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Configure storage
+        run: |
+          cat > /etc/containers/storage.conf << 'EOF'
+          [storage]
+          driver = "vfs"
+          runroot = "/tmp/containers-run"
+          graphroot = "/tmp/containers-storage"
+          EOF
+          
+          mkdir -p /tmp/containers-run /tmp/containers-storage
 
       - name: Verify Buildah
         run: |
           echo "=== Buildah Version ==="
           buildah version
           echo ""
-          echo "=== Storage Driver ==="
-          buildah info --format '{{.store.GraphDriverName}}'
+          echo "=== Storage Info ==="
+          buildah info
 
       - name: Build with Buildah
         run: |
           buildah bud \
+            --isolation chroot \
             --layers \
             --tag ${{ env.IMAGE_NAME }}:buildah-${{ env.IMAGE_TAG }} \
             --file Dockerfile \
@@ -111,10 +135,6 @@ jobs:
       - name: Inspect image
         run: |
           buildah inspect ${{ env.IMAGE_NAME }}:buildah-${{ env.IMAGE_TAG }} | head -50
-
-      - name: Test with Podman (available in buildah image)
-        run: |
-          podman run --rm ${{ env.IMAGE_NAME }}:buildah-${{ env.IMAGE_TAG }}
 
       - name: Cleanup
         if: always()
@@ -132,15 +152,15 @@ jobs:
     steps:
       - name: Results Summary
         run: |
-          echo "# Build Results Summary" 
+          echo "# Build Results Summary"
           echo ""
-          echo "| Builder | Status | Privileged Required |"
-          echo "|---------|--------|---------------------|"
-          echo "| DinD    | ${{ needs.build-dind.result }} | Yes (sidecar) |"
-          echo "| Kaniko  | ${{ needs.build-kaniko.result }} | No |"
-          echo "| Buildah | ${{ needs.build-buildah.result }} | No |"
+          echo "| Builder | Status | Privileged | Storage Driver |"
+          echo "|---------|--------|------------|----------------|"
+          echo "| DinD    | ${{ needs.build-dind.result }} | Yes (sidecar) | overlay |"
+          echo "| Kaniko  | ${{ needs.build-kaniko.result }} | No | n/a |"
+          echo "| Buildah | ${{ needs.build-buildah.result }} | No | vfs |"
           echo ""
-          echo "## Security Notes"
-          echo "- **DinD**: Requires privileged sidecar container"
-          echo "- **Kaniko**: Fully rootless, runs in userspace"
-          echo "- **Buildah**: Rootless with seccomp=unconfined"
+          echo "## Notes"
+          echo "- DinD: Full Docker compatibility, requires privileged sidecar"
+          echo "- Kaniko: Rootless, daemonless, optimized for K8s CI"
+          echo "- Buildah: Rootless with VFS driver, OCI compliant"
