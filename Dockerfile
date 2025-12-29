@@ -8,6 +8,9 @@ RUN apk add --no-cache \
     jq \
     bash
 
+# Create the /app directory first
+RUN mkdir -p /app
+
 # Create a simple script
 RUN echo '#!/bin/bash' > /app/hello.sh && \
     echo 'echo "Hello from ARC DinD runner!"' >> /app/hello.sh && \
