@@ -1,10 +1,57 @@
-name: Actions Runner Controller Demo
+name: Test DinD Build
+
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # Allows manual trigger
 
 jobs:
-  Explore-GitHub-Actions:
-    # You need to use the INSTALLATION_NAME from the previous step
-    runs-on: arc-runner-set
+  build-docker:
+    runs-on: arc-runner-set  # Must match your INSTALLATION_NAME
     steps:
-    - run: echo "🎉 This job uses runner scale set runners!"
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify Docker is available
+        run: |
+          echo "=== Docker Version ==="
+          docker version
+          echo ""
+          echo "=== Docker Info ==="
+          docker info
+          echo ""
+          echo "=== Docker Socket ==="
+          ls -la /var/run/docker.sock || echo "No socket file (using TCP)"
+
+      - name: Build Docker image
+        run: |
+          docker build -t test-image:${{ github.sha }} .
+          docker images
+
+      - name: Run the container
+        run: |
+          docker run --rm test-image:${{ github.sha }}
+
+      - name: Test multi-stage build
+        run: |
+          cat << 'EOF' > Dockerfile.multistage
+          FROM golang:1.21-alpine AS builder
+          WORKDIR /app
+          RUN echo 'package main; import "fmt"; func main() { fmt.Println("Built with DinD!") }' > main.go
+          RUN go build -o hello main.go
+
+          FROM alpine:3.19
+          COPY --from=builder /app/hello /hello
+          ENTRYPOINT ["/hello"]
+          EOF
+          
+          docker build -f Dockerfile.multistage -t multistage-test:latest .
+          docker run --rm multistage-test:latest
+
+      - name: Cleanup
+        run: |
+          docker rmi test-image:${{ github.sha }} || true
+          docker rmi multistage-test:latest || true
+          docker system prune -f
